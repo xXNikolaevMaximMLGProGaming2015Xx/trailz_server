@@ -4,7 +4,7 @@ from flask_restful import Api,Resource
 import json 
 import os
 from colorama import Fore, Back, Style
-
+from gps_processor import *
 app = Flask(__name__)
 api = Api(app)
 
@@ -20,7 +20,7 @@ class ServerManager():
     def sql_init(self) -> None:
         self.curs.execute('''CREATE TABLE IF NOT EXISTS users_data(email STR NOT NULL,
                   password STR NOT NULL,
-                  nickname STR NOT NULL)''')
+                  username STR NOT NULL)''')
         self.con.commit()
         self.curs.execute("""CREATE TABLE IF NOT EXISTS trail_data(trail_id INTEGER PRIMARY KEY NOT NULL, 
                 trail_name STR NOT NULL,
@@ -33,6 +33,12 @@ class ServerManager():
                 FOREIGN KEY (email) REFERENCES users_data (email))""")
         self.con.commit()
     
+    def add_trail_table(self,trail_id):
+        self.curs.execute(f'''CREATE TABLE IF NOT EXISTS leaderboard_{trail_id}(username STR NOT NULL,
+                run_time int NOT NULL)''')
+        self.con.commit()
+        
+        
     def add_trail(self,distance,date,start_lat,start_lon,trail_name,email,description) -> bool:
         self.curs.execute("SELECT email,trail_name FROM trail_data")
         for data in self.curs.fetchall():
@@ -43,6 +49,8 @@ class ServerManager():
         if email in [i[0] for i in self.curs.fetchall()]:
             self.curs.execute("INSERT INTO trail_data(trail_name,email,distance,start_date,start_lat,start_lon,description) VALUES (?,?,?,?,?,?,?)", (trail_name,email,float(distance),str(date),float(start_lat),float(start_lon),description))
             self.con.commit()
+            self.curs.execute(f"""SELECT trail_id FROM trail_data WHERE email = "{email}" AND trail_name = "{trail_name}" """)
+            self.add_trail_table(self.curs.fetchall()[0][0])
             return True
         else:         
             return False 
@@ -57,17 +65,35 @@ class ServerManager():
                     return False
         return False
     
-    def sign_up(self,email,password,nickname) -> str:
-        self.curs.execute('SELECT email,nickname FROM users_data')
+    def sign_up(self,email,password,username) -> str:
+        self.curs.execute('SELECT email,username FROM users_data')
         for i in self.curs.fetchall():
             if str(i[0]) == email:
                 return "used_email"
-            if str(i[1]) == nickname:
-                return "used_nickname"
-        self.curs.execute("""INSERT INTO users_data(email,password,nickname) VALUES (?,?,?)""", (email,password,nickname))
+            if str(i[1]) == username:
+                return "used_username"
+        self.curs.execute("""INSERT INTO users_data(email,password,username) VALUES (?,?,?)""", (email,password,username))
         self.con.commit()
         return "success"
     
+    def add_rerun(self,email,name,run_time):
+        self.curs.execute(f"""SELECT username FROM users_data WHERE email = "{email}" """)
+        usernmae = self.curs.fetchall()[0][0]
+        self.curs.execute(f"""SELECT trail_id FROM trail_data WHERE email = "{email}" AND trail_name = "{name}" """)
+        id = self.curs.fetchall()[0][0]
+        self.curs.execute(f"""SELECT run_time FROM leaderboard_{id} WHERE email = "{email}" """)
+        prev_time = self.curs.fetchall()
+        if self.curs.fetchall() == []:
+            self.curs.execute(f"""INSERT INTO leaderboard_{id}(usernmae,run_time) VALUES (?,?)""",(usernmae,run_time))
+            self.con.commit()
+        else:
+            prev_time = prev_time[0][0]
+            if prev_time > run_time:
+                self.curs.execute(f"""DELETE FROM leaderboard_{id} WHERE email = "{email}" """)
+                self.curs.execute(f"""INSERT INTO leaderboard_{id}(usernmae,run_time) VALUES (?,?)""",(usernmae,run_time))
+                self.con.commit()
+        
+
     def get_all_trails(self,sort_type,location,page):
         trails_per_page = 1
         self.curs.execute('SELECT trail_name,email,distance,start_date,start_lat,start_lon,trail_id,description FROM trail_data')
@@ -75,7 +101,7 @@ class ServerManager():
         main_tail_list = []
         for i in range(len(trail_list)):
             trail_list[i] = list(trail_list[i])
-            self.curs.execute(f'SELECT nickname FROM users_data WHERE email = "{trail_list[i][1]}"')
+            self.curs.execute(f'SELECT username FROM users_data WHERE email = "{trail_list[i][1]}"')
             trail_list[i][1] = self.curs.fetchall()[0][0]
         
         if page * trails_per_page > (len(trail_list)):
@@ -89,6 +115,18 @@ class ServerManager():
         else:
             return trail_list[:(page + 1    ) * trails_per_page]
         
+    def check_rerun(self,email,trail_id):
+        with open(f'{os.getcwd()}/saved_trails/{trail_name}_{email}.json',"r") as file:
+            trail_json = json.load(file)
+        with open(f"{os.getcwd()}/public_trail.json"):
+            rerun_json= json.load(file)
+        data = process_trail_validation(trail_json,rerun_json)[0]
+        if data  == True:
+           self.add_rerun(email,trail_json["name"],data[1])
+           
+        else:
+            return False
+        
         
 MainManager = ServerManager()
 
@@ -98,7 +136,7 @@ def post_add_trail(trail_name,distance,date,start_lat,start_lon,description,emai
     if request.method == 'POST':
         if MainManager.login(email,password):
             json_file = request.files["file"]
-            print("a")
+            
             if MainManager.add_trail(distance,date,start_lat,start_lon,trail_name,email,description) == True:
                 json_file.save(f'{os.getcwd()}/saved_trails/{trail_name}_{email}.json')
                 return "True"
@@ -108,16 +146,28 @@ def post_add_trail(trail_name,distance,date,start_lat,start_lon,description,emai
 def post_login(email,password):
     return str(MainManager.login(email,password))
     
-@app.route('/sign_up/<email>/<password>/<nickname>')
-def post_sign_up(email,password,nickname):
+@app.route('/sign_up/<email>/<password>/<username>')
+def post_sign_up(email,password,username):
     global MainManager
-    return MainManager.sign_up(email,password,nickname)
+    return MainManager.sign_up(email,password,username)
 
 @app.route("/get_all_trails/<sort_type>/<location>/<page>")
 def get_get_all_trails(sort_type,location,page):
     page = int(page)
     return {"data" : MainManager.get_all_trails(sort_type,location,page)}
-    
+
+@app.route("/load_rerun/<email>/<password>/trail_id")
+def post_load_rerun(email,password,trail_id):
+    global MainManager
+    if request.method == 'POST':
+        if MainManager.login(email,password):
+            os.remove(f"{os.getcwd()}/public_trail.json")
+            public_trail = request.files["file"]
+            public_trail.save(f"{os.getcwd()}/public_trail.json")
+            MainManager.check_rerun(email,trail_id)
+            
 
 MainManager.sign_up("test","test","test")
+
+
 app.run(host=MainManager.BASE_IP,debug=True)
