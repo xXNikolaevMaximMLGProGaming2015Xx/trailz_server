@@ -77,6 +77,7 @@ class ServerManager():
         return "success"
     
     def add_rerun(self,email,name,run_time):
+        run_time = int(run_time)
         self.curs.execute(f"""SELECT username FROM users_data WHERE email = "{email}" """)
         usernmae = self.curs.fetchall()[0][0]
         self.curs.execute(f"""SELECT trail_id FROM trail_data WHERE email = "{email}" AND trail_name = "{name}" """)
@@ -115,7 +116,26 @@ class ServerManager():
         else:
             return trail_list[:(page + 1    ) * trails_per_page]
         
-    def check_rerun(self,email,trail_id):
+    def get_leaderboard(self,trail_id,page):
+        trails_per_page = 1
+        self.curs.execute(f'SELECT usernmae, run_time FROM leaderboard_{trail_id} ORDER BY run_time')
+        user_list = self.curs.fetchall()
+        main_tail_list = []
+        for i in range(len(user_list)):
+            user_list[i] = list(user_list[i])
+        
+        if page * trails_per_page > (len(user_list)):
+            return user_list
+        if page != 0:
+            print("a")
+            if (len(user_list) - 1) % (page * trails_per_page) != 0:
+                return user_list
+            else:
+                return user_list[:(page + 1) * trails_per_page]
+        else:
+            return user_list[:(page + 1) * trails_per_page]
+            
+    def check_rerun(self,email,trail_name):
         with open(f'{os.getcwd()}/saved_trails/{trail_name}_{email}.json',"r") as file:
             trail_json = json.load(file)
         with open(f"{os.getcwd()}/public_trail.json"):
@@ -165,7 +185,16 @@ def post_load_rerun(email,password,trail_id):
             public_trail = request.files["file"]
             public_trail.save(f"{os.getcwd()}/public_trail.json")
             MainManager.check_rerun(email,trail_id)
-            
+
+@app.route("/get_leaderboard/<trail_id>")
+def get_leaderboard(trail_id):
+    global MainManager
+    try:
+        leaderboard = MainManager.get_leaderboard(trail_id)
+    except:
+        leaderboard = []
+    return {"data" : leaderboard}
+
 
 MainManager.sign_up("test","test","test")
 
